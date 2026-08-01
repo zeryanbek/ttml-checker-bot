@@ -214,6 +214,27 @@ for american, british in REGIONAL_SPELLING_PAIRS.items():
     REGIONAL_PATTERNS.append((re.compile(r'\b' + re.escape(american) + r'\b', re.IGNORECASE), "American", british))
     REGIONAL_PATTERNS.append((re.compile(r'\b' + re.escape(british) + r'\b', re.IGNORECASE), "British/Commonwealth", american))
 
+CURLY_SINGLE = re.compile('[\u2018\u2019]')
+CURLY_DOUBLE = re.compile('[\u201c\u201d]')
+CENSORED_PATTERN = re.compile(r'\*{2,}')
+WOAH_PATTERN = re.compile(r'\bwoah\b', re.IGNORECASE)
+
+CYRILLIC_LOOKALIKES = {
+    '\u0430': 'a', '\u0435': 'e', '\u0455': 's', '\u0456': 'i',
+    '\u043e': 'o', '\u0440': 'p', '\u0441': 'c', '\u0443': 'y',
+    '\u0445': 'x', '\u043a': 'k', '\u043c': 'm', '\u043d': 'h',
+    '\u0432': 'b', '\u0442': 't',
+}
+
+FULLWIDTH_TO_ASCII = {}
+for i in range(0x21, 0x7f):
+    FULLWIDTH_TO_ASCII[chr(i + 0xfee0)] = chr(i)
+FULLWIDTH_SPACE = '\u3000'
+
+NON_PROPER_CAP_EXCEPTIONS = {'I', "I'm", "I'll", "I'd", "I've", "I'ma", "I'MMA"}
+
+REPEATED_WORDS_PATTERN = re.compile(r'\b(\w+)\b(?:\s+\1\b){2,}', re.IGNORECASE)
+
 
 def build_text(spans):
     parts = []
@@ -312,6 +333,75 @@ def check_regional_spelling(text, line_num, is_bg):
     return regional
 
 
+def check_curly_quotes(text, line_num, is_bg):
+    errors = []
+    if CURLY_SINGLE.search(text):
+        errors.append(fmt_issue(line_num, is_bg, "ERROR! Contains curly single quotes (' and '); use straight quotes (')"))
+    if CURLY_DOUBLE.search(text):
+        errors.append(fmt_issue(line_num, is_bg, 'ERROR! Contains curly double quotes (" and "); use straight quotes (")'))
+    return errors
+
+
+def check_censored(text, line_num, is_bg):
+    errors = []
+    if CENSORED_PATTERN.search(text):
+        errors.append(fmt_issue(line_num, is_bg, "WARNING! Contains censored/asterisked text; replace with actual words if possible"))
+    return errors
+
+
+def check_woah(text, line_num, is_bg):
+    regional = []
+    for match in WOAH_PATTERN.finditer(text):
+        regional.append(fmt_issue(line_num, is_bg, f'"{match.group()}" should be "whoa"'))
+    return regional
+
+
+def check_cyrillic_lookalikes(text, line_num, is_bg):
+    errors = []
+    for cyrillic_char, latin_char in CYRILLIC_LOOKALIKES.items():
+        if cyrillic_char in text:
+            idx = text.index(cyrillic_char)
+            context = text[max(0, idx - 5):idx + 6]
+            errors.append(fmt_issue(line_num, is_bg, f'ERROR! Cyrillic character "{cyrillic_char}" (looks like Latin "{latin_char}") found: "...{context}..."'))
+    return errors
+
+
+def check_fullwidth(text, line_num, is_bg):
+    errors = []
+    if FULLWIDTH_SPACE in text:
+        errors.append(fmt_issue(line_num, is_bg, "ERROR! Contains fullwidth ideographic space; use normal ASCII space"))
+    for ch in text:
+        if ch in FULLWIDTH_TO_ASCII:
+            ascii_version = FULLWIDTH_TO_ASCII[ch]
+            errors.append(fmt_issue(line_num, is_bg, f'ERROR! Fullwidth character "{ch}" should be ASCII "{ascii_version}"'))
+            break
+    return errors
+
+
+def check_mid_sentence_caps(text, line_num, is_bg):
+    errors = []
+    tokens = text.split()
+    if len(tokens) < 2:
+        return errors
+    for i in range(1, len(tokens)):
+        token = tokens[i]
+        if re.match(r'^[A-Z][a-z]', token) and token not in NON_PROPER_CAP_EXCEPTIONS:
+            errors.append(fmt_issue(line_num, is_bg, f'WARNING! Unexpected capital mid-sentence: "{token}"'))
+            break
+    return errors
+
+
+def check_repeated_words(text, line_num, is_bg):
+    errors = []
+    for match in REPEATED_WORDS_PATTERN.finditer(text):
+        word = match.group(1)
+        matched_text = match.group()
+        tokens = matched_text.split()
+        count = sum(1 for t in tokens if t.lower() == word.lower())
+        errors.append(fmt_issue(line_num, is_bg, f'WARNING! Word "{word}" repeated {count} times; should be hyphenated like "{word}-{word}-{word}"'))
+    return errors
+
+
 def check_single_string(text, line_num, is_bg):
     errors = []
     regional = []
@@ -341,6 +431,14 @@ def check_single_string(text, line_num, is_bg):
     errors.extend(check_omissions(stripped, line_num, is_bg))
     regional.extend(check_til_variant(stripped, line_num, is_bg))
     regional.extend(check_regional_spelling(stripped, line_num, is_bg))
+
+    errors.extend(check_curly_quotes(stripped, line_num, is_bg))
+    errors.extend(check_censored(stripped, line_num, is_bg))
+    regional.extend(check_woah(stripped, line_num, is_bg))
+    errors.extend(check_cyrillic_lookalikes(stripped, line_num, is_bg))
+    errors.extend(check_fullwidth(stripped, line_num, is_bg))
+    errors.extend(check_mid_sentence_caps(stripped, line_num, is_bg))
+    errors.extend(check_repeated_words(stripped, line_num, is_bg))
 
     if stripped.endswith('-') and not stripped.endswith('—'):
         tokens = stripped.split()
